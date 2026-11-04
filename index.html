@@ -231,17 +231,27 @@ function classify(S2){const g=S2.filter(q=>q.length>=12).map(q=>ang(q)).filter(a
   cr=(p,q)=>{const d=(u,v,w)=>(v[0]-u[0])*(w[1]-u[1])-(v[1]-u[1])*(w[0]-u[0]);return d(p.a,p.b,q.a)*d(p.a,p.b,q.b)<0&&d(q.a,q.b,p.a)*d(q.a,q.b,p.b)<0},
   ln=bg.filter(x=>x.ok);
  if(bg.length==2&&ln.length==2&&cr(ln[0],ln[1]))return"crate";
- {/* door mark = circle + cross; deliberately forgiving: wobbly lines, short lines, lines that just miss each other, a lopsided or half-closed circle */
-  const psd=(p,a,b)=>{const dx=b[0]-a[0],dy=b[1]-a[1],Q=dx*dx+dy*dy;let u=Q?((p[0]-a[0])*dx+(p[1]-a[1])*dy)/Q:0;u=Math.max(0,Math.min(1,u));return Math.hypot(p[0]-a[0]-dx*u,p[1]-a[1]-dy*u)},
-   sgd=(a,b,c,d)=>Math.min(psd(a,c,d),psd(b,c,d),psd(c,a,b),psd(d,a,b)),
-   par=(a,b,c,d)=>{const ux=b[0]-a[0],uy=b[1]-a[1],vx=d[0]-c[0],vy=d[1]-c[1];return Math.abs(ux*vy-uy*vx)/(Math.hypot(ux,uy)*Math.hypot(vx,vy)+1e-9)},
-   ex=(p,f)=>{const mx=(p.b[0]-p.a[0])*f,my=(p.b[1]-p.a[1])*f;return{a:[p.a[0]-mx,p.a[1]-my],b:[p.b[0]+mx,p.b[1]+my]}},
-   l2=bg.filter(x=>x.len>16&&x.rt>.55).map(x=>ex(x,.25)),
-   /* the cross is often drawn without lifting the pen: its own line crosses itself (the loop itself is ignored) */
-   xl=S2.some(q=>{const A=ang(q);if(A.sw>3.4&&A.cv<.5)return false;const n=q.length;
-    for(let i=2;i<n-1;i++){const a=q[i-1],b=q[i];for(let j=i+2;j<n;j++){const c=q[j-1],d=q[j];
-     if(Math.abs(par(a,b,c,d))>.35&&(cr({a,b},{a:c,b:d})||sgd(a,b,c,d)<4))return true}}return false});
-  if(bg.length>=2&&((l2.length>=2&&l2.some((u,i)=>l2.some((v,j)=>j>i&&cr(u,v))))||xl)&&g.some(a=>a.sw>3.4&&a.cv<.5))return"door"}
+ {/* door mark = one nearly closed circle, plus a cross whose four arms reach out through the middle of it.
+    The old check accepted any two short crossing ticks inside a circle; now every arm must actually span most of the ring. */}
+ const ss=S2.filter(q=>q.length>=8).map((q,i)=>({q,i,A:ang(q)}));
+ const loops=ss.map(o=>{const A=o.A;if(A.m<16||A.sw<5.2||A.sw>9.5||A.mono<.55||A.cv>.38||A.rmax/Math.max(A.rmin,1)>2)return null;
+  const bins=new Uint8Array(24);for(const p of o.q){const b=((Math.atan2(p[1]-A.cy,p[0]-A.cx)+Math.PI)/(Math.PI*2)*24|0)%24;bins[b]=1}
+  const cover=bins.reduce((s,v)=>s+v,0)/24;return cover<.72?null:{...o,cover}}).filter(Boolean);
+ if(loops.length){const L0=loops.sort((a,b)=>b.cover-a.cover||a.A.cv-b.A.cv)[0],C=[L0.A.cx,L0.A.cy],R=L0.A.m,binR=new Float32Array(24),binS=new Float32Array(24),binC=new Float32Array(24);let near=1e9;
+  for(const o of ss){if(o.i===L0.i)continue;for(const p of o.q){const dx=p[0]-C[0],dy=p[1]-C[1],d=Math.hypot(dx,dy);if(d<near)near=d;
+   const a=Math.atan2(dy,dx),b=((a+Math.PI)/(Math.PI*2)*24|0)%24;if(d>binR[b])binR[b]=d;binS[b]+=Math.sin(a);binC[b]+=Math.cos(a)}}
+  const on=Array.from(binR,d=>d>=R*.66),groups=[];
+  for(let i=0;i<24;i++){if(!on[i]||on[(i+23)%24])continue;let n=0,sx=0,sy=0,mr=0,j=i;
+   while(on[j]&&n<24){sx+=binC[j];sy+=binS[j];mr=Math.max(mr,binR[j]);on[j]=false;n++;j=(j+1)%24}
+   groups.push({a:Math.atan2(sy,sx),r:mr})}
+  if(groups.length===4&&near<=R*.28&&Math.max(...binR)<=L0.A.rmax*2){
+   const used=Array(4).fill(false),lines=[];
+   for(let i=0;i<4;i++){if(used[i])continue;let best=-1,bd=1e9;
+    for(let j=i+1;j<4;j++){if(used[j])continue;const d=Math.abs(Math.atan2(Math.sin(groups[i].a-groups[j].a),Math.cos(groups[i].a-groups[j].a)));
+     const off=Math.abs(d-Math.PI),rat=Math.min(groups[i].r,groups[j].r)/Math.max(groups[i].r,groups[j].r);
+     if(off<.7&&rat>.5&&off<bd){bd=off;best=j}}
+    if(best>=0){used[i]=used[best]=true;lines.push(((groups[i].a%Math.PI)+Math.PI)%Math.PI)}}
+   if(lines.length===2){const d=Math.abs(lines[0]-lines[1]);if(Math.min(d,Math.PI-d)>.5)return"door"}}}
  return null}
 /* chalk surfaces: the floor, every wall of the room and the four chamber walls. The chalk can reach any of them, not just the one in front of you */
 function chalkList(l){const t=[{k:"floor"}];l.walls.forEach((w,i)=>t.push({k:"wall",i}));t.push({k:"bd",s:0},{k:"bd",s:1},{k:"bd",s:2},{k:"bd",s:3});return t}
