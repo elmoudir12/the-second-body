@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>The Second Body — Shrine</title>
+<style>
+:root{--bg:#050807;--fg:#d8e6da;--ac:#5fe3cf;--pn:rgba(5,8,7,.62);color-scheme:dark}
+html,body{height:100%;margin:0;background:var(--bg);overflow:hidden;font-family:Georgia,serif;color:var(--fg)}
+canvas{display:block}
+#top{position:fixed;left:0;right:0;top:0;display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;padding:calc(8px + env(safe-area-inset-top,0px)) 14px 8px;background:linear-gradient(var(--pn),transparent)}
+h1{font:italic 400 20px/1 Georgia,serif;margin:0 6px 0 0}
+#lv{display:flex;gap:6px}
+button{font:inherit;font-size:14px;color:var(--fg);background:var(--pn);border:1px solid #6f8a7a;border-radius:3px;padding:4px 11px;cursor:pointer}
+button.on{background:var(--ac);border-color:var(--ac);color:#06130f;font-weight:700}
+button:focus-visible,input:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
+label{display:flex;gap:8px;align-items:center;font-size:14px}
+#hint{position:fixed;left:50%;bottom:calc(12px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);width:min(720px,92vw);box-sizing:border-box;margin:0;padding:9px 16px;background:var(--pn);border-radius:4px;font-size:14px;line-height:1.5;pointer-events:none}
+#hint b{color:var(--ac)}
+#fps{position:fixed;right:calc(10px + env(safe-area-inset-right,0px));bottom:calc(10px + env(safe-area-inset-bottom,0px));margin:0;padding:3px 8px;background:var(--pn);border-radius:3px;font:12px/1.4 ui-monospace,Menlo,Consolas,monospace;color:var(--ac);pointer-events:none;font-variant-numeric:tabular-nums}
+#ov{position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:rgba(5,12,9,.7)}
+#ov h2{font:italic 400 34px Georgia,serif;margin:0}
+@media(prefers-reduced-motion:no-preference){#ov{animation:f .5s}@keyframes f{from{opacity:0}}}
+</style></head><body>
+<div id="top"><h1>The Second Body</h1><div id="lv"></div>
+<label>Echo delay <input type="range" id="dl" min="1" max="6" step=".5"> <b id="dv"></b></label><button id="rs">Restart</button></div>
+<div id="ov"><h2 id="ot"></h2><button id="nx"></button></div>
+<p id="hint"></p>
+<p id="fps">-- FPS</p>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* TODO (next time)
+   1. (DONE: variants + random pick per instance) Make a few variants of the symbols and randomize them so they don't look the same all the time.
+   2. (DONE: chalk found in chamber 5, drawn plates in 6 and 7, crate/door/entry marks in 8 to 11) Future tools or weapons that let us draw these symbols, and make the surface the symbol is drawn on do what the symbol is for.
+   3. Rotating the shrine with the left mouse should make the player do a balancing animation as if he feels it, and also shake the crate and other future physical objects in the game depending on how strong the rotation is.
+   4. A Rubik's cube-like tool that is used to reshape the chamber I'm in.
+   5. Future puzzles built around the echo repeating my actions: e.g. I press a button and the echo, repeating my actions, presses it again and cancels what I did, so I have to plan around what it will undo.
+   6. Summoning-symbol counts: 8 symbols in a circle, all lit at once, summon the chalk (room 5). The number of symbols is the rule, so other counts/arrangements will summon other items in future mechanics.
+*/
+const T=THREE,TILE=2,W=20,H=12,SP=5,DT=1/60,R=.3,WH=2.6,COL=[0xff8a3d,0x4fd1c5,0xe5c453];
+const L=[
+{n:"Handoff",h:"A door opens while anything stands on a plate beside it. Stand on the first plate until your echo steps onto it, then go through and stand on the second plate so the door stays open for your echo. Both of you must reach the portal.",D:3,start:[2,6],walls:[[9,0,1,5],[9,7,1,5]],doors:[[9,5,1,2]],plates:[[5.5,6,0],[12,6,0]],crates:[],exits:[[17,6]]},
+{n:"Dead end",h:"Nothing beyond this door can hold it open. Leave the crate on the plate (E or Space to carry) and the door stays open for both of you.",D:3,start:[2,6],walls:[[10,0,1,5],[10,7,1,5]],doors:[[10,5,1,2]],plates:[[5,3,0]],crates:[[3,9]],exits:[[17,6]]},
+{n:"Two doors",h:"The middle plate serves both doors. Hold it until your echo reaches the first plate, and again until it steps onto the middle one, so it can follow you through each door.",D:3,start:[2,6],walls:[[7,0,1,5],[7,7,1,5],[13,0,1,5],[13,7,1,5]],doors:[[7,5,1,2],[13,5,1,2]],plates:[[4.5,6,0],[10,6,0],[10,6,1],[16,6,1]],crates:[],exits:[[18.5,6]]},
+{n:"Long way",h:"Use the crate on the first door, then hand off twice. The last door is latched by a mark in the floor: step on it and the door opens, but your echo steps on it again later and shuts it. Fetch the second crate and wedge it in the doorway before that happens.",D:3,start:[1.5,6],walls:[[5,0,1,5],[5,7,1,5],[9,0,1,5],[9,7,1,5],[13,0,1,5],[13,7,1,5],[17,0,1,4],[17,8,1,4]],doors:[[5,5,1,2],[9,5,1,2],[13,5,1,2],[17,4,1,4]],plates:[[3,3,0],[7,6,1],[11,6,1],[11,6,2],[15,2.5,2]],crates:[[3,9],[16,8.4]],exits:[[19,6]],trace:[[15.5,9.4]],tg:[[0,3]]},
+{n:"Tracing",h:"Eight marks sit in the floor. Step on one and it lights; step on it again and it goes dark. Light all eight at the same moment. Your echo has opinions about that.",D:3,start:[2,6],walls:[],doors:[],plates:[],crates:[],exits:[],dx:1,tool:[10,6],trace:[[7.5,6.0],[8.23,4.23],[10.0,3.5],[11.77,4.23],[12.5,6.0],[11.77,7.77],[10.0,8.5],[8.23,7.77]]}];
+const X=v=>v-W/2,Z=v=>v-H/2;
+/* renderer */
+const rd=new T.WebGLRenderer({antialias:true});rd.setPixelRatio(Math.min(2,devicePixelRatio));rd.outputEncoding=T.sRGBEncoding;rd.toneMapping=T.ACESFilmicToneMapping;rd.toneMappingExposure=1.1;rd.shadowMap.enabled=true;rd.shadowMap.type=T.PCFSoftShadowMap;document.body.prepend(rd.domElement);
+const FOG=0x03070a,sc=new T.Scene(),pl=new T.Group();sc.add(pl);sc.background=new T.Color(FOG);sc.fog=new T.FogExp2(FOG,.016);
+const cam=new T.PerspectiveCamera(50,1,.1,120);
+function rs(){rd.setSize(innerWidth,innerHeight);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()}addEventListener("resize",rs);rs();
+/* procedural stone */
+let seed=7;const rnd=()=>(seed=seed*16807%2147483647)/2147483647;
+function tex(f,S=512){const c=document.createElement("canvas");c.width=c.height=S;f(c.getContext("2d"),S);const t=new T.CanvasTexture(c);t.wrapS=t.wrapT=T.RepeatWrapping;t.anisotropy=8;t.encoding=T.sRGBEncoding;return t}
+function stone(kind){return tex((g,S)=>{g.fillStyle="#9a9a94";g.fillRect(0,0,S,S);
+ const tl=(x,y,w,h)=>{const v=125+rnd()*55|0;g.fillStyle=`rgb(${v},${v},${v-8})`;g.fillRect(x+3,y+3,w-6,h-6)};
+ if(kind=="wall"){for(let r=0;r<4;r++)for(let k=-1;k<3;k++)tl(k*S/2+(r%2?S/4:0),r*S/4,S/2,S/4)}
+ else if(kind=="floor"){for(let i=0;i<4;i++)for(let j=0;j<4;j++)tl(i*128,j*128,128,128);
+  [[1,1,.9],[2,2,.7],[0,3,.6],[3,0,.6]].forEach(([i,j,s])=>{for(let r=4;r<62*s+8;r+=6){g.strokeStyle=(r/6|0)%2?"rgba(40,36,28,.75)":"rgba(215,205,175,.55)";g.lineWidth=3;g.beginPath();g.arc(i*128+64+Math.sin(r)*1.5,j*128+64,r,0,6.3);g.stroke()}})}
+ else{g.fillStyle="#8e8c80";g.fillRect(0,0,S,S);g.strokeStyle="rgba(30,28,22,.8)";g.lineWidth=6;g.strokeRect(14,14,S-28,S-28);
+  for(let r=20;r<230;r+=14){g.strokeStyle=(r/14|0)%2?"rgba(35,32,25,.85)":"rgba(205,200,175,.5)";g.lineWidth=5;g.beginPath();g.arc(S/2,S/2,r,.5+r*.01,5.8);g.stroke()}}
+ for(let i=0;i<5000;i++){const a=rnd()*.22;g.fillStyle=rnd()>.5?`rgba(20,25,18,${a})`:`rgba(230,225,200,${a*.7})`;const s=1+rnd()*5;g.fillRect(rnd()*S,rnd()*S,s,s)}
+ for(let i=0;i<12;i++){g.strokeStyle="rgba(15,15,10,.5)";g.lineWidth=1.2;g.beginPath();let x=rnd()*S,y=rnd()*S;g.moveTo(x,y);for(let k=0;k<6;k++){x+=rnd()*40-20;y+=rnd()*40-10;g.lineTo(x,y)}g.stroke()}
+ for(let i=0;i<30;i++){g.fillStyle="rgba(60,80,45,.10)";g.beginPath();g.arc(rnd()*S,rnd()*S,10+rnd()*30,0,6.3);g.fill()}})}
+function brick(){const bw=128,bh=64,mo=6,n=4,rows=8;
+ const tint=Array.from({length:n*rows},()=>rnd());
+ return tex((g,S)=>{g.fillStyle="#4f4b43";g.fillRect(0,0,S,S);
+  for(let r=0;r<rows;r++)for(let c=-1;c<=n;c++){const cc=((c%n)+n)%n,off=r%2?bw/2:0,x=c*bw+off,y=r*bh;
+   const v=(122+tint[r*n+cc]*26)|0;g.fillStyle=`rgb(${v},${v-4},${v-12})`;
+   g.fillRect(x+mo/2,y+mo/2,bw-mo,bh-mo)}},512)}
+const glyph=f=>tex((g,S)=>{g.fillStyle="#000";g.fillRect(0,0,S,S);g.strokeStyle="#fff";g.lineWidth=S/36;f(g,S)},256);
+/* symbol variants: every symbol type has a small pool of hand-drawn variants, picked at random per instance */
+const NV=4,rg=(a,b)=>a+Math.random()*(b-a),pk=a=>a[Math.random()*a.length|0],jf=o=>k=>{const v=Math.sin((k+o)*91.7)*43758.5453;return(v-Math.floor(v)-.5)*6};
+const cv=()=>{const c=document.createElement("canvas");c.width=c.height=256;return[c,c.getContext("2d")]};
+const mkTex=c=>{const t=new T.CanvasTexture(c);t.anisotropy=8;return t};
+const mkDoor=()=>{const[c,g]=cv(),S=256,sd=rg(0,6.28);g.strokeStyle="#fff";g.lineWidth=rg(7,9);g.lineCap="round";g.lineJoin="round";
+ /* same hand-drawn recipe as the plate and crate marks: uniform ink line, slow multi-frequency wobble, imperfect closure, overshooting strokes */
+ {const rb=rg(43,48),a0=rg(0,6.28),ov=rg(1.03,1.12),tw=rg(2,6),N=72;g.beginPath();for(let i=0;i<=N;i++){const t=i/N,a=a0+t*Math.PI*2*ov,rr=rb+Math.sin(a*3+sd)*2.4+Math.sin(a*7+sd*2.3)*1.3+t*tw,x=S/2+Math.cos(a)*rr,y=S/2+Math.sin(a)*rr;i?g.lineTo(x,y):g.moveTo(x,y)}g.stroke()}
+ g.save();g.translate(128,128);g.rotate(rg(-.14,.14));g.translate(-128,-128);
+ const stroke=(a,b,k)=>{const dx=b[0]-a[0],dy=b[1]-a[1],l=Math.hypot(dx,dy),nx=-dy/l,ny=dx/l,N=28,am=rg(.8,1.25),s0=rg(-9,9),s1=rg(-9,9);g.beginPath();
+  for(let i=0;i<=N;i++){const u=i/N,wob=(Math.sin(u*5.1+k)*3.2+Math.sin(u*11.3+k*2.1)*1.4)*am,sx=s0*(1-u)+s1*u,x=a[0]+dx*u+nx*wob+dx/l*sx,y=a[1]+dy*u+ny*wob+dy/l*sx;i?g.lineTo(x,y):g.moveTo(x,y)}g.stroke()};
+ const k1=rg(0,40),k2=rg(0,40),m=()=>rg(56,68);
+ if(Math.random()<.5){stroke([S/2+rg(-3,3),m()],[S/2+rg(-3,3),S-m()],k1);stroke([m(),S/2+rg(-3,3)],[S-m(),S/2+rg(-3,3)],k2)}else{stroke([S-m(),S/2+rg(-3,3)],[m(),S/2+rg(-3,3)],k2);stroke([S/2+rg(-3,3),S-m()],[S/2+rg(-3,3),m()],k1)}
+ g.restore();return mkTex(c)};
+const gDoorV=Array.from({length:5},mkDoor);
+const gPlate=glyph((g,S)=>{g.beginPath();g.arc(S/2,S/2,46,0,6.3);g.stroke();g.beginPath();g.arc(S/2,S/2,20,0,6.3);g.stroke()});
+const mkPlate=()=>{const[c,g]=cv();g.strokeStyle="#fff";g.lineWidth=rg(7,9);g.lineCap="round";g.lineJoin="round";
+ const loop=(r,a0,sd,tw,ov)=>{g.beginPath();const N=64;for(let i=0;i<=N;i++){const t=i/N,a=a0+t*Math.PI*2*ov,rr=r+Math.sin(a*3+sd)*3+Math.sin(a*7+sd*2.3)*1.6+t*tw,x=128+Math.cos(a)*rr,y=128+Math.sin(a)*rr;i?g.lineTo(x,y):g.moveTo(x,y)}g.stroke()};
+ loop(rg(93,99),rg(0,6.28),rg(0,6.28),rg(2,7),rg(1.03,1.12));loop(rg(40,48),rg(0,6.28),rg(0,6.28),rg(-5,-1),rg(1.03,1.12));return mkTex(c)};
+/* floor spirals: one steady unbroken line like a real hand-drawn spiral. No wobble in the line itself; the imperfection is in the whole shape (squashed, off-centre, uneven spacing, speed of the hand drifting) */
+const spiral=(g,N,a0,dir,SW,Ri,Rm,arm)=>{const sq=rg(-.07,.07),sa=rg(0,6.28),pw=rg(.88,1.12),cx=rg(-5,5),cy=rg(-5,5),sd=rg(0,6.28),w=rg(.05,.1);g.beginPath();
+ for(let i=0;i<=N;i++){const u=i/N,a=a0+dir*(u*SW+Math.sin(u*2.2+sd)*w*SW),rr=Ri+Math.pow(u,pw)*(Rm-Ri),e=Math.cos(2*(a-sa))*sq,x=128+cx*u+Math.cos(a)*rr*(1+e),y=128+cy*u+Math.sin(a)*rr*(1-e);i?g.lineTo(x,y):g.moveTo(x,y)}g.stroke()};
+const mkExit=()=>{const[c,g]=cv();g.strokeStyle="#fff";g.lineWidth=rg(7,9.5);g.lineCap="round";g.lineJoin="round";
+ spiral(g,220,rg(0,6.28),1,rg(2.2,3)*Math.PI*2,rg(8,13),rg(96,108));return mkTex(c)};
+const mkEntry=()=>{const[c,g]=cv();g.strokeStyle="#fff";g.lineWidth=rg(7,9.5);g.lineCap="round";g.lineJoin="round";
+ const a0=rg(0,6.28),SW=rg(1.3,1.8)*Math.PI*2,Ri=rg(12,16),Rm=rg(94,106);
+ for(let arm=0;arm<2;arm++)spiral(g,180,a0+arm*Math.PI,-1,SW,Ri,Rm);return mkTex(c)};
+const gPlateV=Array.from({length:NV},mkPlate),gExitV=Array.from({length:NV},mkExit),gEntryV=Array.from({length:NV},mkEntry);
+const mkOne=()=>{const[c,g]=cv();g.strokeStyle="#fff";g.lineWidth=rg(7,9);g.lineCap="round";g.lineJoin="round";const a0=rg(0,6.28),sd=rg(0,6.28),tw=rg(2,7),ov=rg(1.03,1.12),r=rg(58,68),N=64;g.beginPath();for(let i=0;i<=N;i++){const t=i/N,a=a0+t*Math.PI*2*ov,rr=r+Math.sin(a*3+sd)*3+Math.sin(a*7+sd*2.3)*1.6+t*tw,x=128+Math.cos(a)*rr,y=128+Math.sin(a)*rr;i?g.lineTo(x,y):g.moveTo(x,y)}g.stroke();return mkTex(c)};
+const gOneV=Array.from({length:NV},mkOne);
+/* tracing-room mark: hand-drawn triangle with a dot, so it never reads as the one-circle button */
+const mkTri=()=>{const[c,g]=cv();g.strokeStyle=g.fillStyle="#fff";g.lineWidth=rg(7,9);g.lineCap="round";g.lineJoin="round";
+ const a0=rg(0,6.28),r=rg(66,76),p=[0,1,2].map(i=>[128+Math.cos(a0+i*2.0944)*r+rg(-4,4),128+Math.sin(a0+i*2.0944)*r+rg(-4,4)]),o=rg(.06,.16);
+ g.beginPath();g.moveTo(p[0][0],p[0][1]);g.lineTo(p[1][0],p[1][1]);g.lineTo(p[2][0],p[2][1]);g.lineTo(p[0][0],p[0][1]);g.lineTo(p[0][0]+(p[1][0]-p[0][0])*o,p[0][1]+(p[1][1]-p[0][1])*o);g.stroke();
+ g.beginPath();g.arc(128+rg(-4,4),128+rg(-4,4),rg(8,11),0,6.3);g.fill();return mkTex(c)};
+const gTriV=Array.from({length:NV},mkTri);
+const gCrate=glyph((g,S)=>{g.strokeRect(24,24,S-48,S-48);g.beginPath();g.moveTo(62,62);g.lineTo(S-62,S-62);g.moveTo(S-62,62);g.lineTo(62,S-62);g.stroke()});
+const tW=brick(),tF=brick(),tC=stone("cube");
+const crateX=g=>{g.lineCap="round";g.lineJoin="round";const J0=jf(rg(0,1e3)),J=k=>J0(k)/6;
+ const stroke=(a,b,k,w)=>{const dx=b[0]-a[0],dy=b[1]-a[1],L=Math.hypot(dx,dy),nx=-dy/L,ny=dx/L,N=16,am=rg(.8,1.25);g.lineWidth=w;g.beginPath();
+  for(let i=0;i<=N;i++){const u=i/N,wob=(Math.sin(u*5.1+k)*4.5+Math.sin(u*11.3+k*2.1)*2+J(k*40+i)*5)*am,sx=(i==0?J(k+7)*14:0)+(i==N?J(k+9)*14:0);
+   const x=a[0]+dx*u+nx*wob+dx/L*sx,y=a[1]+dy*u+ny*wob+dy/L*sx;i?g.lineTo(x,y):g.moveTo(x,y)}g.stroke()};
+ const k1=rg(0,40),k2=rg(0,40),w=rg(14,16.5),o1=[[rg(60,74),rg(58,72)],[rg(178,194),rg(182,196)]],o2=[[rg(180,196),rg(60,74)],[rg(58,74),rg(180,196)]];
+ if(Math.random()<.5){stroke(o1[0],o1[1],k1,w);stroke(o2[0],o2[1],k2,w)}else{stroke(o2[1],o2[0],k2,w);stroke(o1[1],o1[0],k1,w)}};
+const mkCrate=()=>{const t=tex((g,S)=>{g.fillStyle="#9b937a";g.fillRect(0,0,S,S);
+ for(let i=0;i<900;i++){const a=.03+rnd()*.05;g.fillStyle=rnd()>.5?`rgba(30,28,20,${a})`:`rgba(240,232,205,${a})`;const z=1+rnd()*3;g.fillRect(rnd()*S,rnd()*S,z,z)}
+ g.fillStyle="#6f6a58";g.fillRect(0,0,S,14);g.fillRect(0,S-14,S,14);g.fillRect(0,0,14,S);g.fillRect(S-14,0,14,S);
+ g.strokeStyle="#4a4638";g.lineWidth=2;g.strokeRect(1,1,S-2,S-2);
+ g.strokeStyle="#e5cf85";g.lineWidth=15;crateX(g)},256);t.wrapS=t.wrapT=T.ClampToEdgeWrapping;return t};
+const crateMaps=Array.from({length:NV},mkCrate);
+const mPlateSide=new T.MeshStandardMaterial({color:0x8a8570,roughness:.9});
+const mCrate=new T.MeshStandardMaterial({map:crateMaps[0],roughness:.85});
+const SYM=new T.Color(0xe5cf85).convertSRGBToLinear();/* #e5cf85 as the screen shows it, same as the crate X painted in the sRGB texture */
+const tint=c=>new T.Color(c).lerp(new T.Color(0xe6dcc2),.45);
+const mt=(m,c,o)=>new T.MeshStandardMaterial(Object.assign({map:m,bumpMap:m,bumpScale:2,color:c,roughness:.9},o));
+const mSand=mt(tF,0xb9a37c),mWall=mt(tW,0x9a9488),mBlock=mt(tW,0xa39d90),mDark=mt(tW,0x66625a),mMoss=mt(tW,0x5f5b52);
+mSand.map.repeat.set(W/TILE,H/TILE);mSand.bumpMap=mSand.map;
+const glowT=(()=>{const c=document.createElement("canvas");c.width=c.height=128;const g=c.getContext("2d"),r=g.createRadialGradient(64,64,0,64,64,64);r.addColorStop(0,"rgba(255,255,255,1)");r.addColorStop(.3,"rgba(255,255,255,.35)");r.addColorStop(1,"rgba(255,255,255,0)");g.fillStyle=r;g.fillRect(0,0,128,128);return new T.CanvasTexture(c)})();
+function glow(col,x,y,z,s,o){const m=new T.Mesh(new T.PlaneGeometry(s,s),new T.MeshBasicMaterial({map:glowT,color:col,transparent:true,opacity:o,blending:T.AdditiveBlending,depthWrite:false}));m.rotation.x=-Math.PI/2;m.position.set(x,y,z);return m}
+function bx(w,h,d,m,x,y,z,par,S=0){const g=new T.BoxGeometry(w,h,d),uv=g.attributes.uv,ps=g.attributes.position,nr=g.attributes.normal,dm=[[d,h],[d,h],[w,d],[w,d],[w,h],[w,h]];
+ if(S){const ou=rnd(),ov=rnd();for(let f=0;f<6;f++)for(let i=0;i<4;i++){const j=f*4+i;uv.setXY(j,uv.getX(j)*dm[f][0]/S+ou,uv.getY(j)*dm[f][1]/S+ov)}}
+ else for(let j=0;j<ps.count;j++){const px=ps.getX(j)+x,py=ps.getY(j)+y,pz=ps.getZ(j)+z,nx=Math.abs(nr.getX(j)),ny=Math.abs(nr.getY(j));
+  let a=px,b=py;if(nx>.5)a=pz;else if(ny>.5)b=pz;uv.setXY(j,a/TILE,b/TILE)}
+ const o=new T.Mesh(g,m);o.position.set(x,y,z);o.castShadow=o.receiveShadow=true;(par||pl).add(o);return o}
+/* lighting */
+sc.add(new T.HemisphereLight(0xe8e4dc,0x3a3834,.85),new T.AmbientLight(0x8a8680,.3));
+const sun=new T.DirectionalLight(0xffd6a0,1.2);sun.position.set(-8,20,10);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);
+Object.assign(sun.shadow.camera,{left:-15,right:15,top:11,bottom:-11,near:1,far:50});sun.shadow.bias=-.0006;sc.add(sun);
+/* shrine shell */
+for(let i=0;i<5;i++){const k=1-i*.17;bx((W+1.6)*k,1.1,(H+1.6)*k,i%2?mDark:mBlock,0,-.6-i*1.05,0)}
+pl.add(glow(0xffe8cc,0,-6.5,0,28,.4));{const ul=new T.PointLight(0xffe8cc,1.6,18);ul.position.set(0,-3.5,0);pl.add(ul)}
+const rocks=[];for(let i=0;i<14;i++){const r=new T.Mesh(new T.DodecahedronGeometry(.4+rnd()*1.1),mDark),a=rnd()*6.28,d=15+rnd()*12;r.position.set(Math.cos(a)*d,-6+rnd()*13,Math.sin(a)*d*.8);r.userData={y:r.position.y,s:.05+rnd()*.1,p:rnd()*6};pl.add(r);rocks.push(r)}
+{const n=350,p=new Float32Array(n*3);for(let i=0;i<n;i++){const a=rnd()*6.28,b=Math.acos(rnd()*2-1),r=55+rnd()*30;p[i*3]=r*Math.sin(b)*Math.cos(a);p[i*3+1]=r*Math.cos(b);p[i*3+2]=r*Math.sin(b)*Math.sin(a)}
+ const g=new T.BufferGeometry();g.setAttribute("position",new T.BufferAttribute(p,3));sc.add(new T.Points(g,new T.PointsMaterial({color:0xbfeee6,size:1.1,transparent:true,opacity:.7,fog:false,depthWrite:false})))}
+const fl=new T.Mesh(new T.PlaneGeometry(W,H),mSand);fl.rotation.x=-Math.PI/2;fl.receiveShadow=true;pl.add(fl);
+bx(W+1.6,.3,H+1.6,mBlock,0,-.17,0);
+/* the four chamber walls (west, east, south, north): each is rebuilt from its full span minus the openings the chalk cuts */
+let bwM=[[],[],[],[]],bwG=[[],[],[],[]];
+const BWDEF=[[1,WH,H,-W/2-.5,WH/2,0],[1,WH,H,W/2+.5,WH/2,0],[W+2,WH,1,0,WH/2,-H/2-.5],[W+2,WH,1,0,WH/2,H/2+.5]];
+function buildBWall(s){bwM[s].forEach(m=>pl.remove(m));bwM[s]=[];
+ const gs=bwG[s].slice().sort((a,b)=>a[0]-b[0]),segs=[];let a=s<2?0:-1,en=s<2?H:W+1;
+ for(const q of gs){if(q[0]>a)segs.push([a,q[0]]);a=Math.max(a,q[1])}
+ if(a<en)segs.push([a,en]);
+ for(const q of segs){const d=q[1]-q[0];if(d<=.02)continue;
+  if(s<2)bwM[s].push(bx(1,WH,d,mMoss,BWDEF[s][3],WH/2,Z(q[0]+d/2),pl));
+  else bwM[s].push(bx(d,WH,1,mMoss,X((q[0]+q[1])/2),WH/2,BWDEF[s][5],pl))}}
+function cutBoundary(s,c){bwG[s].push([c-1,c+1]);buildBWall(s)}
+function makeBoundary(){for(let s=0;s<4;s++)buildBWall(s)}
+makeBoundary();
+
+function lamp(x,z,s=1){const g=new T.Group(),ped=new T.Mesh(new T.CylinderGeometry(.22*s,.38*s,s,8),mBlock);ped.position.y=.5*s;
+ const dish=new T.Mesh(new T.CylinderGeometry(.5*s,.3*s,.18*s,8),mDark);dish.position.y=1.05*s;
+ const gem=new T.Mesh(new T.SphereGeometry(.26*s,16,12),new T.MeshStandardMaterial({color:0xcfffe0,emissive:0x7dffb0,emissiveIntensity:1.1,roughness:.25}));gem.scale.y=1.3;gem.position.y=1.4*s;
+ [ped,dish,gem].forEach(m=>{m.castShadow=true;g.add(m)});g.position.set(x,0,z);pl.add(g);
+ const l=new T.PointLight(0x8affc0,1,10);l.position.set(x,1.9*s,z);pl.add(l)}
+
+{const n=400,p=new Float32Array(n*3);for(let i=0;i<n;i++){p[i*3]=rnd()*24-12;p[i*3+1]=rnd()*7;p[i*3+2]=rnd()*16-8}
+ const g=new T.BufferGeometry();g.setAttribute("position",new T.BufferAttribute(p,3));pl.add(new T.Points(g,new T.PointsMaterial({color:0xcfe8d6,size:.06,transparent:true,opacity:.45,depthWrite:false})))}
+/* the two bodies */
+function body(col,op,em){const g=new T.Group(),m=new T.MeshStandardMaterial({color:col,roughness:.7,transparent:op<1,opacity:op,emissive:em,emissiveIntensity:.5}),
+ add=(geo,x,y,z)=>{const o=new T.Mesh(geo,m);o.position.set(x,y,z);o.castShadow=true;g.add(o);return o},
+ lg=()=>new T.BoxGeometry(.18,.7,.2).translate(0,-.35,0),ag=()=>new T.BoxGeometry(.14,.6,.16).translate(0,-.3,0);
+ add(new T.BoxGeometry(.5,.7,.3),0,1.05,0);add(new T.SphereGeometry(.2,16,12),0,1.6,0);
+ g.lL=add(lg(),-.13,.7,0);g.lR=add(lg(),.13,.7,0);g.aL=add(ag(),-.34,1.38,0);g.aR=add(ag(),.34,1.38,0);
+ const gem=new T.Mesh(new T.OctahedronGeometry(.07),new T.MeshBasicMaterial({color:op<1?0xbff6ff:0x7dffb0}));gem.position.set(0,1.1,.17);g.add(gem);return g}
+const pB=body(0xe6dcc2,1,0x2a2418),eB=body(0x8fe6ff,.62,0x2bc4ff);pl.add(pB,eB);
+/* Kamui: the bodies are twisted and sucked into the exit's eye, deformed in world space on the GPU */
+const RED=new T.Color(0xff2a18),_v=new T.Vector3(),wU=[0,1].map(()=>({k:{value:0},c:{value:new T.Vector3()},a:{value:new T.Vector3(0,1,0)},m:{value:0}}));
+const KG=`uniform float uK;uniform vec3 uC;uniform vec3 uA;uniform float uM;
+vec3 kamui(vec3 w){if(uK<=0.0)return w;
+ vec3 c=uC+vec3(0.0,.28,0.0)*(1.0-uM),r=w-c;float da=dot(r,uA);
+ float h=uM>.5?clamp(1.0-da/1.9,0.0,1.0):clamp((w.y-uC.y)/1.9,0.0,1.0);
+ float e=clamp(uK*1.7-(1.0-h)*.7,0.0,1.0);e=e*e*(3.0-2.0*e);
+ float a=e*(7.0+6.0*h),ca=cos(a),sa=sin(a);
+ vec3 ra=uA*da,rp=r-ra;
+ rp=rp*ca+cross(uA,rp)*sa;
+ float s=sin(e*3.14159);
+ rp*=(1.0+.55*s*(.4+h))*(1.0-.985*e);
+ ra*=(1.0+.35*s*h)*(1.0-.93*e);
+ return c+rp+ra;}`;
+function warpable(m,u){m.onBeforeCompile=sh=>{sh.uniforms.uK=u.k;sh.uniforms.uC=u.c;sh.uniforms.uA=u.a;sh.uniforms.uM=u.m;
+ sh.vertexShader=sh.vertexShader.replace("#include <common>","#include <common>\n"+KG).replace("#include <project_vertex>","vec4 mvPosition=viewMatrix*vec4(kamui((modelMatrix*vec4(transformed,1.0)).xyz),1.0);\ngl_Position=projectionMatrix*mvPosition;")}}
+[pB,eB].forEach((b,i)=>{const seen=new Set(),dm=new T.MeshDepthMaterial({depthPacking:T.RGBADepthPacking});warpable(dm,wU[i]);
+ b.traverse(o=>{if(!o.isMesh)return;if(!seen.has(o.material)){seen.add(o.material);warpable(o.material,wU[i])}o.customDepthMaterial=dm})});
+const bodyMat=[pB,eB].map(b=>b.children[0].material),bodyEm=bodyMat.map(m=>m.emissive.clone());
+const eL=new T.PointLight(0x4fe6ff,1.2,6);
+const tr=new T.Line(new T.BufferGeometry().setAttribute("position",new T.BufferAttribute(new Float32Array(400*3),3)),new T.LineBasicMaterial({color:0x6fe3ff,transparent:true,opacity:.55}));tr.frustumCulled=false;pl.add(tr);
+/* level */
+const dl=document.getElementById("dl"),dv=document.getElementById("dv"),ov=document.getElementById("ov"),lvBox=document.getElementById("lv");
+let lv=0,D=3,S,keys={},lg=null,dM=[],pM=[],cM=[],last=0,acc=0,tt=0,yw=-Math.PI/2,pit=.62,fx=0,fz=0,zm=1,drg=false,lx=0,ly=0,tY=0,tX=0;
+const elv=()=>Math.max(.22,Math.min(1.32,1.134+tY)),rigR=()=>16.6*zm;
+L.forEach((l,i)=>{const b=document.createElement("button");b.textContent=i+1;b.title=l.n;b.onclick=()=>load(i);lvBox.appendChild(b)});
+let bmsg="",wM=[],PH=null,arrive=false,HAS=false,dpM=[],tlM=null,xdM=null,trM=[],tgM=[],TL=new T.Color(0x5fe3cf).convertSRGBToLinear();
+const EXS=l=>S.xd?l.exits.concat([S.xd]):l.exits;
+function addXD(p){const m=new T.Mesh(new T.PlaneGeometry(1.4,1.4),new T.MeshStandardMaterial({color:SYM,map:pk(gExitV),roughness:.9,transparent:true,alphaTest:.05}));m.rotation.x=-Math.PI/2;m.rotation.z=Math.random()*6.28;m.position.set(X(p[0]),.06,Z(p[1]));m.userData.t0=tt;lg.add(m);xdM=m}
+function addCrate(x,y){S.crates.push({x,y,h:null,r:0});const c=new T.Mesh(new T.BoxGeometry(.7,.7,.7),new T.MeshStandardMaterial({map:pk(crateMaps),roughness:.85}));c.position.set(X(x),.35,Z(y));c.castShadow=c.receiveShadow=true;c.userData.t0=tt;lg.add(c);cM.push(c);if(PH)PH.addC(x,y)}
+function setHint(){const l=L[lv];document.getElementById("hint").innerHTML="<b>"+l.n+".</b> "+l.h+(HAS&&l.tool?" <b>Chalk taken.</b>":"")+' <span style="opacity:.65">WASD or arrows move · walk into a crate to push it · drag to turn the shrine · scroll to zoom · E / Space grab or drop'+(HAS?" · Q draw":"")+' · R restart</span>'}
+function addDP(p){const gm=new T.CylinderGeometry(.68,.72,.1,48),pp=gm.attributes.position,pu=gm.attributes.uv;for(let v=0;v<pp.count;v++)pu.setXY(v,(p[0]+pp.getX(v))/W,(H-p[1]-pp.getZ(v))/H);
+ const o=new T.Mesh(gm,[mPlateSide,mSand,mPlateSide]),rm=new T.MeshStandardMaterial({color:SYM,map:pk(gPlateV),roughness:.9,transparent:true,alphaTest:.05}),r=new T.Mesh(new T.PlaneGeometry(1.2,1.2),rm);r.rotation.x=-Math.PI/2;r.rotation.z=Math.random()*6.28;r.position.y=.056;o.add(r);
+ o.position.set(X(p[0]),.05,Z(p[1]));o.castShadow=o.receiveShadow=true;o.userData.t0=tt;lg.add(o);const sp=glow(SYM,X(p[0]),.35,Z(p[1]),2.4,.2);sp.visible=false;lg.add(sp);o.userData.sp=sp;dpM.push(o)}
+/* chalk drawing mode: Q turns the view to the wall or floor in front of you, the mouse becomes chalk, what you draw is recognised */
+let dmode=null;const lk=new T.Vector3(),_w=new T.Vector3(),_w2=new T.Vector3(),rc=new T.Raycaster(),mv2=new T.Vector2();
+const CH="url(\""+"data:image/svg+xml,"+encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><g transform='rotate(45 16 16)'><rect x='13' y='3' width='7' height='24' rx='2.5' fill='#e5cf85' stroke='#8a7a45'/></g></svg>")+"\") 9 24, crosshair";
+function rayRect(ox,oy,dx,dy,r){let t0=0,t1=1e9,nx=0,ny=0;
+ for(const a of[0,1]){const o=a?oy:ox,d=a?dy:dx,lo=a?r[1]:r[0],hi=lo+(a?r[3]:r[2]);
+  if(Math.abs(d)<1e-9){if(o<lo||o>hi)return null;continue}
+  let ta=(lo-o)/d,tb=(hi-o)/d,sg=-1;if(ta>tb){const q=ta;ta=tb;tb=q;sg=1}
+  if(ta>t0){t0=ta;nx=a?0:sg;ny=a?sg:0}
+  t1=Math.min(t1,tb);if(t0>t1)return null}
+ return t0>0?[t0,nx,ny]:null}
+function ang(st,c0){const n=st.length;let cx=0,cy=0;st.forEach(p=>{cx+=p[0];cy+=p[1]});cx/=n;cy/=n;if(c0){cx=c0[0];cy=c0[1]}let sw=0,ab=0,pa=null;const rs=[];
+ for(const p of st){const a=Math.atan2(p[1]-cy,p[0]-cx);rs.push(Math.hypot(p[0]-cx,p[1]-cy));if(pa!=null){let d=a-pa;d=Math.atan2(Math.sin(d),Math.cos(d));sw+=d;ab+=Math.abs(d)}pa=a}
+ const m=rs.reduce((a,b)=>a+b)/n,sd=Math.sqrt(rs.reduce((a,b)=>a+(b-m)*(b-m),0)/n),mi=(n-1)/2;let nu=0,di=0,dr=0;rs.forEach((r,i)=>{nu+=(i-mi)*(r-m);di+=(i-mi)*(i-mi);dr+=(r-m)*(r-m)});
+ return{cx,cy,sw:Math.abs(sw),mono:ab?Math.abs(sw)/ab:0,m,cv:sd/m,co:Math.abs(nu/Math.sqrt(di*dr||1)),rmax:Math.max(...rs),rmin:Math.min(...rs)}}
+function classify(S2){const g=S2.filter(q=>q.length>=12).map(q=>ang(q)).filter(a=>a.m>14);
+ if(g.length==1){const a=g[0];if(a.sw>=8&&a.mono>.75&&a.co>.6&&a.rmax/Math.max(a.rmin,1)>2.2)return"exit"}
+ if(g.length==2){g.sort((u,v)=>u.m-v.m);const a=g[0],b=g[1];if(a.sw>4.8&&b.sw>4.8&&a.cv<.36&&b.cv<.36&&Math.hypot(a.cx-b.cx,a.cy-b.cy)<b.m)return"plate"}
+ if(g.length==2){const ss=S2.filter(q=>q.length>=12),pt=ss.length==2?ss[0].concat(ss[1]):null;
+  if(pt){const c=[pt.reduce((a,p)=>a+p[0],0)/pt.length,pt.reduce((a,p)=>a+p[1],0)/pt.length],A=ss.map(q=>ang(q,c));
+   if(A.every(a=>a.sw>=3.5&&a.mono>.8&&a.co>.7&&a.rmax/Math.max(a.rmin,1)>1.8))return"entry"}}
+ const bg=S2.filter(q=>q.length>=6).map(q=>{const a=q[0],b=q[q.length-1];let Ln=0;for(let i=1;i<q.length;i++)Ln+=Math.hypot(q[i][0]-q[i-1][0],q[i][1]-q[i-1][1]);return{a,b,ok:Ln>28&&Math.hypot(b[0]-a[0],b[1]-a[1])/Ln>.8,len:Ln,rt:Math.hypot(b[0]-a[0],b[1]-a[1])/Math.max(Ln,1)}}),
+  cr=(p,q)=>{const d=(u,v,w)=>(v[0]-u[0])*(w[1]-u[1])-(v[1]-u[1])*(w[0]-u[0]);return d(p.a,p.b,q.a)*d(p.a,p.b,q.b)<0&&d(q.a,q.b,p.a)*d(q.a,q.b,p.b)<0},
+  ln=bg.filter(x=>x.ok);
+ if(bg.length==2&&ln.length==2&&cr(ln[0],ln[1]))return"crate";
+ {/* door mark = circle + cross; deliberately forgiving: wobbly lines, short lines, lines that just miss each other, a lopsided or half-closed circle */
+  const psd=(p,a,b)=>{const dx=b[0]-a[0],dy=b[1]-a[1],Q=dx*dx+dy*dy;let u=Q?((p[0]-a[0])*dx+(p[1]-a[1])*dy)/Q:0;u=Math.max(0,Math.min(1,u));return Math.hypot(p[0]-a[0]-dx*u,p[1]-a[1]-dy*u)},
+   sgd=(a,b,c,d)=>Math.min(psd(a,c,d),psd(b,c,d),psd(c,a,b),psd(d,a,b)),
+   par=(a,b,c,d)=>{const ux=b[0]-a[0],uy=b[1]-a[1],vx=d[0]-c[0],vy=d[1]-c[1];return Math.abs(ux*vy-uy*vx)/(Math.hypot(ux,uy)*Math.hypot(vx,vy)+1e-9)},
+   ex=(p,f)=>{const mx=(p.b[0]-p.a[0])*f,my=(p.b[1]-p.a[1])*f;return{a:[p.a[0]-mx,p.a[1]-my],b:[p.b[0]+mx,p.b[1]+my]}},
+   l2=bg.filter(x=>x.len>16&&x.rt>.55).map(x=>ex(x,.25)),
+   /* the cross is often drawn without lifting the pen: its own line crosses itself (the loop itself is ignored) */
+   xl=S2.some(q=>{const A=ang(q);if(A.sw>3.4&&A.cv<.5)return false;const n=q.length;
+    for(let i=2;i<n-1;i++){const a=q[i-1],b=q[i];for(let j=i+2;j<n;j++){const c=q[j-1],d=q[j];
+     if(Math.abs(par(a,b,c,d))>.35&&(cr({a,b},{a:c,b:d})||sgd(a,b,c,d)<4))return true}}return false});
+  if(bg.length>=2&&((l2.length>=2&&l2.some((u,i)=>l2.some((v,j)=>j>i&&cr(u,v))))||xl)&&g.some(a=>a.sw>3.4&&a.cv<.5))return"door"}
+ return null}
+/* chalk surfaces: the floor, every wall of the room and the four chamber walls. The chalk can reach any of them, not just the one in front of you */
+function chalkList(l){const t=[{k:"floor"}];l.walls.forEach((w,i)=>t.push({k:"wall",i}));t.push({k:"bd",s:0},{k:"bd",s:1},{k:"bd",s:2},{k:"bd",s:3});return t}
+const BDN=["west wall","east wall","south wall","north wall"];
+function surfName(sf){return sf.k=="floor"?"the floor":sf.k=="wall"?"wall "+(sf.i+1):sf.k=="door"?"the door":BDN[sf.s]}
+/* where a surface sits: C is the point on it in grid units, n points from the surface into the room */
+function surfPlace(sf,px,py,dx,dy){const l=L[lv],cl=(v,a,b)=>Math.max(a,Math.min(b,v));let C,n;
+if(sf.C){C=sf.C;n=sf.n}
+else if(sf.k=="floor")C=[cl(px+dx*1.5,1,W-1),cl(py+dy*1.5,1,H-1)];
+else if(sf.k=="wall"){const w=l.walls[sf.i];
+ if(w[3]>=w[2]){const lf=px<w[0]+w[2]/2;C=[lf?w[0]:w[0]+w[2],cl(py,w[1],w[1]+w[3]-1)];n=[lf?-1:1,0]}
+ else{const dn=py<w[1]+w[3]/2;C=[cl(px,w[0],w[0]+w[2]-1),dn?w[1]:w[1]+w[3]];n=[0,dn?-1:1]}}
+else{const s=sf.s;C=s==0?[0,cl(py,0,H-1)]:s==1?[W,cl(py,0,H-1)]:s==2?[cl(px,0,W-1),0]:[cl(px,0,W-1),H];n=s==0?[1,0]:s==1?[-1,0]:s==2?[0,1]:[0,-1]}
+return{C,n,wall:sf.k!="floor",wi:sf.k=="wall"?sf.i:-1,di:sf.k=="door"?sf.di:-1}}
+function chalkHint(){const d=dmode;if(!d)return;document.getElementById("hint").innerHTML='<b>Chalk.</b> Drawing on <b>'+surfName(d.sf)+'</b>. Drag the mouse to draw. <span style="opacity:.65">Tab: another surface · Q or Enter to finish · C to clear · Esc to cancel</span>'}
+function aimSurface(d,sf){const s=S,p=surfPlace(sf,s.px,s.py,s.fx,s.fy);d.sf=sf;d.C=p.C;d.n=p.n;d.wall=p.wall;d.wi=p.wi;d.di=p.di;d.m.rotation.set(0,0,0);
+if(p.wall){d.m.position.set(X(p.C[0])+p.n[0]*.03,1.25,Z(p.C[1])+p.n[1]*.03);d.m.rotation.y=Math.atan2(p.n[0],p.n[1]);d.cp=[X(p.C[0])+p.n[0]*2.3,1.25,Z(p.C[1])+p.n[1]*2.3]}
+else{d.m.rotation.x=-Math.PI/2;d.m.position.set(X(p.C[0]),.065,Z(p.C[1]));d.cp=[X(s.px)-s.fx*.2,1.9,Z(s.py)-s.fy*.2]}
+d.lk=[d.m.position.x,d.m.position.y,d.m.position.z];chalkHint()}
+function cycleSurf(dir){const d=dmode;if(!d)return;d.idx=(d.idx+dir+d.list.length)%d.list.length;aimSurface(d,d.list[d.idx]);clearDraw()}
+/* where on the surface the mark was drawn: the plane is 1.7 wide, its local X runs along the wall */
+function drawOffset(d){let cx=0,cy=0,n=0;for(const s of d.strokes)for(const p of s){cx+=p[0];cy+=p[1];n++}
+if(!n)return[0,0];cx/=n;cy/=n;const u=cx/512-.5;
+return d.wall?[u*1.7*d.n[1],-u*1.7*d.n[0]]:[u*1.7,-(cy/512-.5)*1.7]}
+function startDraw(){const l=L[lv],s=S;if(dmode||!HAS||s.done||(s.arr!=null&&tt-s.arr<2.3))return;
+ const ox=s.px,oy=s.py,dx=s.fx,dy=s.fy;let bt=1e9,nx=0,ny=0;
+ let bi=-1;l.walls.concat(l.doors).forEach((r,i)=>{const h=rayRect(ox,oy,dx,dy,r);if(h&&h[0]<bt){bt=h[0];nx=h[1];ny=h[2];bi=i}});
+ {let tb=1e9,ax=0;for(const a of[0,1]){const o=a?oy:ox,d=a?dy:dx;if(Math.abs(d)<1e-9)continue;const t=d>0?((a?H:W)-o)/d:-o/d;if(t<tb){tb=t;ax=a}}
+  if(tb<bt){bt=tb;nx=ax?0:-Math.sign(dx);ny=ax?-Math.sign(dy):0;bi=-1}}
+ const cs=document.createElement("canvas");cs.width=cs.height=512;const gx=cs.getContext("2d");gx.lineCap=gx.lineJoin="round";gx.clearRect(0,0,512,512);
+ /* the drawing plane itself must be invisible: only the chalk strokes show. Additive blending means the transparent
+    black background contributes nothing even if the texture's alpha is ignored, so no lit panel sits over the wall */
+ const tx=new T.CanvasTexture(cs),m=new T.Mesh(new T.PlaneGeometry(1.7,1.7),new T.MeshStandardMaterial({color:SYM,map:tx,roughness:.9,transparent:true,alphaTest:.05}));
+ lg.add(m);
+ /* the surface in front of the player: a wall, a door, the chamber wall, or the floor */
+ let sf={k:"floor"};
+ if(bt<=2.2){const hx=ox+dx*bt,hy=oy+dy*bt;
+  if(bi>=0&&bi<l.walls.length)sf={k:"wall",i:bi,C:[hx,hy],n:[nx,ny]};
+  else if(bi>=l.walls.length)sf={k:"door",di:bi-l.walls.length,C:[hx,hy],n:[nx,ny]};
+  else sf={k:"bd",s:nx>0?0:nx<0?1:ny>0?2:3,C:[hx,hy],n:[nx,ny]}}
+ const list=chalkList(l);let idx=sf.k=="wall"?1+sf.i:sf.k=="bd"?1+l.walls.length+sf.s:0;
+ if(sf.k=="door"){list.unshift(sf);idx=0}
+ dmode={m,cs,gx,tx,list,idx,sf,C:null,n:[0,0],wall:false,wi:-1,di:-1,cp:null,lk:[0,0,0],strokes:[],cur:null,down:false,last:null};
+ aimSurface(dmode,sf);
+ rd.domElement.style.cursor=CH}
+/* the door mark builds a sliding door: it cuts an opening through the chosen wall (or stands up from the floor) */
+function buildDoor(d){const l=L[lv],s=S;bmsg="That is enough doors for one room.";if(l.doors.length-l.d0.length>=4)return false;
+ const cl=(v,a,b)=>Math.max(a,Math.min(b,v));let r,cut=-1,bd=-1,pcs=[],c0,lo,hi,make;
+ /* the door is built exactly where the mark went on that wall */
+ if(d.wall&&d.wi>=0){const w=l.walls[d.wi];
+  if(w[3]>=w[2]){if(w[3]<2)return false;c0=d.pos[1];lo=w[1]+1;hi=w[1]+w[3]-1;
+   make=c=>{r=[w[0],c-1,w[2],2];pcs=[[w[0],w[1],w[2],c-1-w[1]],[w[0],c+1,w[2],w[1]+w[3]-c-1]];cut=d.wi}}
+  else{if(w[2]<2)return false;c0=d.pos[0];lo=w[0]+1;hi=w[0]+w[2]-1;
+   make=c=>{r=[c-1,w[1],2,w[3]];pcs=[[w[0],w[1],c-1-w[0],w[3]],[c+1,w[1],w[0]+w[2]-c-1,w[3]]];cut=d.wi}}}
+ else if(d.wall){const nx=d.n[0],ny=d.n[1];
+  /* a chamber wall is a metre thick: the opening goes through it, so the door sits flush inside the wall */
+  if(nx){c0=d.pos[1];lo=1;hi=H-1;bd=nx>0?0:1;make=c=>{r=[nx>0?-1:W,c-1,1,2]}}
+  else{c0=d.pos[0];lo=1;hi=W-1;bd=ny>0?2:3;make=c=>{r=[c-1,ny>0?-1:H,2,1]}}}
+ else{if(Math.abs(s.fx)>=Math.abs(s.fy)){c0=d.pos[1];lo=1;hi=H-1;const px=cl(d.pos[0]-.5,0,W-1);make=c=>{r=[px,c-1,1,2]}}
+  else{c0=d.pos[0];lo=1;hi=W-1;const py=cl(d.pos[1]-.5,0,H-1);make=c=>{r=[c-1,py,2,1]}}}
+ const ov=(a,b,m)=>a[0]-m<b[0]+b[2]&&a[0]+a[2]+m>b[0]&&a[1]-m<b[1]+b[3]&&a[1]+a[3]+m>b[1],pt=(x,y,m)=>ov(r,[x,y,0,0],m);
+ let c;
+ /* a wall door goes exactly where the mark is: no sliding to another spot along the wall */
+ if(d.wall){c=cl(c0,lo,hi);make(c);
+  if(l.doors.some(q=>ov(r,q,0))){bmsg="A door is already drawn here.";return false}}
+ else{
+  const obs=[[s.px,s.py,R+.15]];if(!s.dead)obs.push([s.ex,s.ey,R+.15]);
+  s.crates.forEach(q=>obs.push([q.x,q.y,.5]));
+  l.plates.concat(s.dp).forEach(p=>obs.push([p[0],p[1],.7]));
+  l.exits.forEach(e=>obs.push([e[0],e[1],.7]));
+  obs.push([l.start[0],l.start[1],.7]);if(s.xd)obs.push([s.xd[0],s.xd[1],.7]);
+  const free=cc=>{make(cc);
+   if(l.doors.some(q=>ov(r,q,0)))return false;
+   if(l.walls.some(q=>ov(r,q,0)))return false;
+   for(const o of obs)if(pt(o[0],o[1],o[2]))return false;
+   return true};
+  c=null;
+  for(let k=0;k<=6&&c==null;k+=.1){const a=cl(c0-k,lo,hi),b=cl(c0+k,lo,hi);if(free(a))c=a;else if(free(b))c=b}
+  if(c==null){make(c0);bmsg=(pt(s.px,s.py,R+.15)||(!s.dead&&pt(s.ex,s.ey,R+.15)))?"Step back a little, then draw it again.":"Something is in the way here.";return false}
+ }
+ make(c);
+ if(bd>=0)cutBoundary(bd,c);
+ if(cut>=0){lg.remove(wM[cut]);wM.splice(cut,1);l.walls.splice(cut,1);if(PH)PH.rmW(cut);
+  pcs.filter(p=>p[2]>.05&&p[3]>.05).forEach(p=>{l.walls.push(p);wM.push(bx(p[2],WH,p[3],mWall,X(p[0]+p[2]/2),WH/2,Z(p[1]+p[3]/2),lg));if(PH)PH.addW(p)})}
+ l.doors.push(r);s.doors.push(false);s.un.push(false);if(PH)PH.addD(r);
+ /* a door cut into a chamber wall uses that wall's dark stone so it does not stand out as a bright panel */
+ const m=addDoorMesh(r,false,bd>=0?mMoss:mWall);m.position.y=-WH/2-.1;return true}
+function clearDraw(){if(!dmode)return;dmode.gx.clearRect(0,0,512,512);dmode.strokes=[];dmode.cur=null;dmode.tx.needsUpdate=true}
+function finishDraw(cancel){const d=dmode,l=L[lv],s=S;if(!d)return;dmode=null;rd.domElement.style.cursor="";const ty=cancel?null:classify(d.strokes);let ok=false;
+ const cl=(v,a,b)=>Math.max(a,Math.min(b,v)),off=drawOffset(d);
+ const pos=d.wall?[cl(d.C[0]+d.n[0]*.9+off[0],.8,W-.8),cl(d.C[1]+d.n[1]*.9+off[1],.8,H-.8)]:[cl(d.C[0]+off[0],.8,W-.8),cl(d.C[1]+off[1],.8,H-.8)];d.pos=pos;
+ /* a door mark drawn on a wall always builds on that wall; only a floor mark can latch a nearby door */
+ if(ty=="door"&&d.di<0&&!d.wall&&l.doors.length){let bd=1.4;l.doors.forEach((r,i)=>{const q=Math.hypot(r[0]+r[2]/2-pos[0],r[1]+r[3]/2-pos[1]);if(q<bd){bd=q;d.di=i}})}
+ if(ty=="door"&&d.di<0&&buildDoor(d)){ok=true}
+ if(ty=="exit"&&!s.xd){s.xd=pos;s.xw=d.wall?{p:[d.m.position.x,d.m.position.y,d.m.position.z],n:d.n}:null;d.m.userData.t0=-9;xdM=d.m;ok=true}
+ else if(ty=="plate"&&!l.plates.concat(s.dp).some(p=>Math.hypot(p[0]-pos[0],p[1]-pos[1])<1.6)){let nd=l.dd&&l.dd[s.dp.length];if(nd==null){nd=-1;let bd=1e9;l.doors.forEach((r,i)=>{const q=Math.hypot(r[0]+r[2]/2-pos[0],r[1]+r[3]/2-pos[1]);if(q<bd){bd=q;nd=i}})}const p=[pos[0],pos[1],nd];s.dp.push(p);addDP(p);ok=true;lg.remove(d.m)}
+ else if((ty=="door"||ty=="plate")&&d.di>=0&&!s.un[d.di]&&!s.dp.some(p=>p[3]&&p[2]==d.di)&&!l.plates.concat(s.dp).some(p=>Math.hypot(p[0]-pos[0],p[1]-pos[1])<1.6)){const p=[pos[0],pos[1],d.di,1];s.dp.push(p);addDP(p);ok=true}
+ else if(ty=="crate"){let[x,y]=pos;const pp=l.plates.concat(s.dp).find(p=>Math.hypot(p[0]-x,p[1]-y)<1.3);if(pp){x=pp[0];y=pp[1]}
+  const fr=r=>x+.5>r[0]&&x-.5<r[0]+r[2]&&y+.5>r[1]&&y-.5<r[1]+r[3];
+  if(x>.5&&y>.5&&x<W-.5&&y<H-.5&&!l.walls.some(fr)&&!l.doors.some(fr)&&!s.crates.some(c=>Math.hypot(c.x-x,c.y-y)<.8)&&Math.hypot(s.px-x,s.py-y)>.9&&(s.dead||Math.hypot(s.ex-x,s.ey-y)>.9)){addCrate(x,y);s.nk++;ok=true}}
+ else if(ty=="entry"){arrive=true;load(lv,true);return}
+ if(ok&&ty!="exit"&&ty!="plate")lg.remove(d.m);
+ if(!ok)lg.remove(d.m);
+ if(!cancel&&!ok&&d.strokes.length){document.getElementById("hint").innerHTML="<b>"+(ty=="door"?(d.di>=0?"Face the door and draw the mark again.":bmsg||"There is no room for a door here."):ty?"The stone does not answer here.":"The stone does not answer.")+"</b>";setTimeout(()=>{if(S===s&&!dmode)setHint()},2600)}else setHint()}
+function mp(e){const r=rd.domElement.getBoundingClientRect();mv2.set((e.clientX-r.left)/r.width*2-1,-((e.clientY-r.top)/r.height*2-1));rc.setFromCamera(mv2,cam);const h=rc.intersectObject(dmode.m)[0];return h&&h.uv?[h.uv.x*512,(1-h.uv.y)*512]:null}
+function addPt(p){const d=dmode,g=d.gx,q=d.last;if(q){const dist=Math.hypot(p[0]-q[0],p[1]-q[1]),n=Math.max(1,Math.ceil(dist/6));
+  for(let i=1;i<=n;i++){const a=i==n?p:[q[0]+(p[0]-q[0])*i/n,q[1]+(p[1]-q[1])*i/n],b=i==1?q:d.cur[d.cur.length-1];
+   g.strokeStyle="#fff";g.lineWidth=11;g.beginPath();g.moveTo(b[0],b[1]);g.lineTo(a[0],a[1]);g.stroke();
+   g.strokeStyle="rgba(255,255,255,.45)";g.lineWidth=4;g.beginPath();g.moveTo(b[0]+(Math.random()-.5)*2,b[1]+(Math.random()-.5)*2);g.lineTo(a[0]+(Math.random()-.5)*2,a[1]+(Math.random()-.5)*2);g.stroke();
+   d.cur.push(a)}}d.last=p;d.tx.needsUpdate=true}
+rd.domElement.addEventListener("pointerdown",e=>{if(!dmode||e.button!==0)return;const p=mp(e);dmode.down=true;if(!p)return;dmode.cur=[p];dmode.strokes.push(dmode.cur);dmode.last=p;
+ dmode.gx.fillStyle="#fff";dmode.gx.beginPath();dmode.gx.arc(p[0],p[1],5.5,0,6.3);dmode.gx.fill();dmode.tx.needsUpdate=true});
+rd.domElement.addEventListener("pointermove",e=>{if(!dmode||!dmode.down)return;const p=mp(e);if(!p){dmode.cur=null;dmode.last=null;return}
+ if(!dmode.cur){dmode.cur=[p];dmode.strokes.push(dmode.cur);dmode.last=p;return}addPt(p)});
+addEventListener("pointerup",()=>{if(dmode){dmode.down=false;dmode.cur=null;dmode.last=null}});
+function addDoorMesh(d,caps,mat=mWall){const dr=bx(d[2],WH,d[3],mat||mWall,X(d[0]+d[2]/2),WH/2,Z(d[1]+d[3]/2),lg);dM.push(dr);
+ {const sx=Math.min(d[3],WH)*.8,sz=Math.min(d[2],WH)*.8;
+  [[d[2]/2+.01,0,sx,Math.PI/2],[-(d[2]/2+.01),0,sx,-Math.PI/2],[0,d[3]/2+.01,sz,0],[0,-(d[3]/2+.01),sz,Math.PI]].forEach(([px,pz,s,ry])=>{const p=new T.Mesh(new T.PlaneGeometry(s,s),new T.MeshStandardMaterial({color:SYM,map:pk(gDoorV),roughness:.9,transparent:true,alphaTest:.05}));p.position.set(px,0,pz);p.rotation.y=ry;dr.add(p)})}
+ if(caps)[d[1],d[1]+d[3]].forEach(z=>{const s=z==d[1]?-.225:.225;bx(d[2],WH,.45,mat||mWall,X(d[0]+d[2]/2),WH/2,Z(z+s),lg)});return dr}
+function load(i,keep){lv=i;const l=L[i];if(!l.w0){l.w0=l.walls.map(r=>r.slice());l.d0=l.doors.map(r=>r.slice())}l.walls=l.w0.map(r=>r.slice());l.doors=l.d0.map(r=>r.slice());bwG=[[],[],[],[]];makeBoundary();HAS=i>=5;if(dmode){dmode=null;rd.domElement.style.cursor=""}if(!keep||l.fix)D=l.D;dl.disabled=!!l.fix;dl.value=D;dv.textContent=D.toFixed(1)+" s";
+ S={arr:arrive?tt:null,n:0,px:l.start[0],py:l.start[1],ex:l.start[0],ey:l.start[1],hist:[],inp:[],ev:[],ei:0,k:0,bk:0,dead:false,pst:0,cen:false,gx:1,gy:0,fx:1,fy:0,pc:null,ec:null,act:false,w:0,done:false,
+  crates:l.crates.map(c=>({x:c[0],y:c[1],h:null,r:0})),dp:[],dw:false,mk:(l.trace||[]).map(()=>({p:false,e:false,n:0})),rv:null,doors:l.doors.map(()=>false),un:l.doors.map(()=>false),nk:0,pr:l.plates.map(()=>false)};
+ cam.position.set(Math.sin(-tX)*Math.cos(elv())*rigR(),Math.sin(elv())*rigR(),Math.cos(-tX)*Math.cos(elv())*rigR());pB.rotation.y=eB.rotation.y=Math.PI/2;
+ if(PH)PH.build(l);if(lg)pl.remove(lg);lg=new T.Group();pl.add(lg);dM=[];pM=[];cM=[];dpM=[];tlM=null;trM=[];tgM=[];xdM=null;
+ wM=[];l.walls.forEach(w=>wM.push(bx(w[2],WH,w[3],mWall,X(w[0]+w[2]/2),WH/2,Z(w[1]+w[3]/2),lg)));
+ l.doors.forEach(d=>addDoorMesh(d,true));
+ l.plates.forEach((p,k)=>{const dd=l.plates.findIndex(q=>q[0]==p[0]&&q[1]==p[1]);if(dd<k){pM.push(pM[dd]);return}
+  const gm=new T.CylinderGeometry(.68,.72,.1,48),pp=gm.attributes.position,pu=gm.attributes.uv;
+  for(let v=0;v<pp.count;v++)pu.setXY(v,(p[0]+pp.getX(v))/W,(H-p[1]-pp.getZ(v))/H);
+  const o=new T.Mesh(gm,[mPlateSide,mSand,mPlateSide]),rm=new T.MeshStandardMaterial({color:SYM,map:pk(gPlateV),roughness:.9,transparent:true,alphaTest:.05});o.userData.tm=rm;
+  {const r=new T.Mesh(new T.PlaneGeometry(1.2,1.2),rm);r.rotation.x=-Math.PI/2;r.rotation.z=Math.random()*6.28;r.position.y=.056;o.add(r)}
+  o.position.set(X(p[0]),.05,Z(p[1]));o.castShadow=o.receiveShadow=true;lg.add(o);const sp=glow(SYM,X(p[0]),.35,Z(p[1]),2.4,.2);sp.visible=false;lg.add(sp);o.userData.sp=sp;pM.push(o)});
+ l.exits.forEach(e=>{const xm=new T.Mesh(new T.PlaneGeometry(1.4,1.4),new T.MeshStandardMaterial({color:SYM,map:pk(gExitV),roughness:.9,transparent:true,alphaTest:.05}));xm.rotation.x=-Math.PI/2;xm.rotation.z=Math.random()*6.28;xm.position.set(X(e[0]),.06,Z(e[1]));lg.add(xm)});
+ {const rm=new T.Mesh(new T.PlaneGeometry(1.4,1.4),new T.MeshStandardMaterial({color:SYM,map:pk(gEntryV),roughness:.9,transparent:true,alphaTest:.05}));rm.rotation.x=-Math.PI/2;rm.rotation.z=Math.random()*6.28;rm.position.set(X(l.start[0]),.06,Z(l.start[1]));lg.add(rm)}
+ l.crates.forEach(()=>{const c=new T.Mesh(new T.BoxGeometry(.7,.7,.7),new T.MeshStandardMaterial({map:pk(crateMaps),roughness:.85}));c.position.set(0,.35,0);c.castShadow=c.receiveShadow=true;lg.add(c);cM.push(c)});
+ if(l.tool&&!HAS){const g=new T.Group(),mm=new T.MeshStandardMaterial({color:SYM,emissive:SYM,emissiveIntensity:.35,roughness:.9}),h=new T.Mesh(new T.CylinderGeometry(.1,.1,.5,14),mm),tp=new T.Mesh(new T.SphereGeometry(.1,12,6),mm);tp.position.y=-.25;tp.rotation.x=Math.PI;const q=new T.Group();q.add(h,tp);q.rotation.z=.6;g.add(q);g.position.set(X(l.tool[0]),.9,Z(l.tool[1]));const gl=glow(SYM,X(l.tool[0]),.3,Z(l.tool[1]),3,.5);lg.add(g,gl);tlM={g,gl,tr:!!l.trace}}
+ if(l.trace){const pts=l.trace.map(w=>new T.Vector3(X(w[0]),.065,Z(w[1])));  if(!l.tg)l.trace.forEach(w=>{const m=new T.Mesh(new T.PlaneGeometry(.85,.85),new T.MeshStandardMaterial({color:SYM,map:pk(gTriV),roughness:.9,transparent:true,opacity:0,depthWrite:false}));m.rotation.x=-Math.PI/2;m.rotation.z=Math.random()*6.28;m.position.set(X(w[0]),.07,Z(w[1]));lg.add(m);trM.push(m)});
+  if(l.tg)l.trace.forEach(w=>{const gm=new T.CylinderGeometry(.41,.43,.1,48),pp=gm.attributes.position,pu=gm.attributes.uv;for(let v=0;v<pp.count;v++)pu.setXY(v,(w[0]+pp.getX(v))/W,(H-w[1]-pp.getZ(v))/H);
+   const o=new T.Mesh(gm,[mPlateSide,mSand,mPlateSide]),rm=new T.MeshStandardMaterial({color:SYM,map:pk(gOneV),roughness:.9,transparent:true,alphaTest:.05}),r=new T.Mesh(new T.PlaneGeometry(.72,.72),rm);r.rotation.x=-Math.PI/2;r.rotation.z=Math.random()*6.28;r.position.y=.056;o.add(r);
+   o.position.set(X(w[0]),.05,Z(w[1]));o.castShadow=o.receiveShadow=true;lg.add(o);const sp=glow(SYM,X(w[0]),.35,Z(w[1]),2.4,.2);sp.visible=false;lg.add(sp);o.userData.sp=sp;tgM.push(o)})}
+ arrive=false;ov.style.display="none";setHint();
+ [...lvBox.children].forEach((b,j)=>b.className=j==i?"on":"")}
+/* echo simulation (fixed step, unchanged rules) */
+const hit=(x,y,r)=>x+R>r[0]&&x-R<r[0]+r[2]&&y+R>r[1]&&y-R<r[1]+r[3];
+function solid(x,y,ox,oy){const l=L[lv];if(x<R||y<R||x>W-R||y>H-R)return true;
+ for(const c of S.crates){if(c.h)continue;const b=[c.x-.35,c.y-.35,.7,.7];if(hit(x,y,b)&&!hit(ox,oy,b))return true}
+ for(const w of l.walls)if(hit(x,y,w))return true;
+ for(let i=0;i<l.doors.length;i++)if(!S.doors[i]&&hit(x,y,l.doors[i]))return true;return false}
+function near(x,y){let b=null,bd=1.2;for(const c of S.crates){if(c.h)continue;const d=Math.hypot(c.x-x,c.y-y);if(d<bd){bd=d;b=c}}return b}
+function place(c,x,y,fx,fy){const l=L[lv];let tx=x+fx*.8,ty=y+fy*.8,best=null,bd=1.3;
+ for(const p of l.plates.concat(S.dp)){const d=Math.hypot(p[0]-tx,p[1]-ty);if(d<bd){bd=d;best=p}}
+ if(best){tx=best[0];ty=best[1]}
+ if(tx<.35||ty<.35||tx>W-.35||ty>H-.35||l.walls.some(w=>tx+.35>w[0]&&tx-.35<w[0]+w[2]&&ty+.35>w[1]&&ty-.35<w[1]+w[3])){tx=x;ty=y}
+ c.x=tx;c.y=ty;c.h=null}
+const dn=c=>keys[c]?1:0;
+function killEcho(s){s.dead=true;s.dtt=tt;s.done=true;if(s.ec){s.ec.h=null;s.ec=null}if(PH)PH.m[1].setEnabled(false);
+ setTimeout(()=>{if(S===s){document.getElementById("ot").textContent="The echo was cut off";document.getElementById("nx").textContent="Try again";ov.style.display="flex"}},900)}
+function mvE(x,y,dx,dy){if(PH)return PH.mv(1,x,y,dx,dy);let nx=x+dx;if(!solid(nx,y,x,y))x=nx;let ny=y+dy;if(!solid(x,ny,x,y))y=ny;return[x,y]}
+function step(){const s=S,l=L[lv];if(s.done)return;if(s.arr!=null&&tt-s.arr<2.3)return;s.n++;if(PH)PH.sync(s);
+ let dx=(dn("KeyD")||dn("ArrowRight"))-(dn("KeyA")||dn("ArrowLeft")),dy=(dn("KeyS")||dn("ArrowDown"))-(dn("KeyW")||dn("ArrowUp"));if(dx&&dy){dx*=.7071;dy*=.7071}
+ const sy=Math.sin(-tX),cy=Math.cos(-tX),dx0=dx,dy0=dy;dx=dx0*cy+dy0*sy;dy=dy0*cy-dx0*sy;
+ const ox=s.px,oy=s.py;
+ if(PH)[s.px,s.py]=PH.mv(0,s.px,s.py,dx*SP*DT,dy*SP*DT);else{let nx=s.px+dx*SP*DT;if(!solid(nx,s.py,s.px,s.py))s.px=nx;let ny=s.py+dy*SP*DT;if(!solid(s.px,ny,s.px,s.py))s.py=ny}
+ if(dx||dy){const m=Math.hypot(dx,dy);s.fx=dx/m;s.fy=dy/m}
+ s.pv=[s.px-ox,s.py-oy];s.pst=Math.abs(s.pv[0])+Math.abs(s.pv[1])<1e-4?s.pst+1:0;s.inp.push([dx,dy]);
+ if(s.act){s.act=false;if(s.pc){place(s.pc,s.px,s.py,s.fx,s.fy);s.pc=null;s.ev.push({n:s.n,k:"d"})}else{const c=near(s.px,s.py);if(c){c.h="p";s.pc=c;s.ev.push({n:s.n,k:"g"})}}}
+ if(l.tool&&!HAS&&(!l.trace||s.rv)&&Math.hypot(s.px-l.tool[0],s.py-l.tool[1])<.9){HAS=true;if(tlM){lg.remove(tlM.g);lg.remove(tlM.gl);tlM=null}setHint()}
+ if(s.dw&&l.slab){s.dw=false;if(HAS&&!s.xd){const tx=s.px+s.fx*1.1,ty=s.py+s.fy*1.1;
+  if(l.slab.some(r=>tx>r[0]+.7&&tx<r[0]+r[2]-.7&&ty>r[1]+.7&&ty<r[1]+r[3]-.7)){s.xd=[tx,ty];addXD(s.xd)}
+  else{document.getElementById("hint").innerHTML="<b>The stone does not answer here.</b>";setTimeout(()=>{if(S===s)setHint()},1600)}}}
+ if(s.dw){s.dw=false;const dd=l.dd;if(HAS&&dd&&s.dp.length<dd.length){const tx=s.px+s.fx*1.1,ty=s.py+s.fy*1.1,fr=r=>tx+.75>r[0]&&tx-.75<r[0]+r[2]&&ty+.75>r[1]&&ty-.75<r[1]+r[3];
+  if(tx>.8&&ty>.8&&tx<W-.8&&ty<H-.8&&!l.walls.some(fr)&&!l.doors.some(fr)&&!l.plates.concat(s.dp).some(p=>Math.hypot(p[0]-tx,p[1]-ty)<1.6)){const p=[tx,ty,dd[s.dp.length]];s.dp.push(p);addDP(p)}}}
+ s.hist.push([s.px,s.py]);
+ const F=Math.round(D*60),eo=[s.ex,s.ey],sched=s.n-F-1;
+ /* echo follows the player's recorded positions; a door that shuts in its way cuts the link and kills it */
+ if(!s.dead){
+  /* once the echo has replayed everything and rests at the portal, it walks to the exact middle and stands still */
+  const xe=EXS(l).find(e=>Math.hypot(s.ex-e[0],s.ey-e[1])<.9);s.cen=!!xe&&s.pst>F+2;
+  if(s.cen){const vx=xe[0]-s.ex,vy=xe[1]-s.ey,dd=Math.hypot(vx,vy);if(dd>.02){const f=Math.min(1,SP*DT*.6/dd),r=mvE(s.ex,s.ey,vx*f,vy*f);s.ex=r[0];s.ey=r[1]}else{s.ex=xe[0];s.ey=xe[1]}}
+  for(let it=0;it<(s.cen?0:2);it++){if(s.k>sched||s.k>=s.hist.length)break;const tg=s.hist[s.k];let vx=tg[0]-s.ex,vy=tg[1]-s.ey;const dd=Math.hypot(vx,vy),mx=SP*DT*1.01;
+   if(dd>mx){vx*=mx/dd;vy*=mx/dd}
+   const g=Math.hypot(vx,vy);
+   if(dd>1e-4){const r=mvE(s.ex,s.ey,vx,vy);s.ex=r[0];s.ey=r[1];s.gx=vx/g;s.gy=vy/g}
+   if(Math.hypot(tg[0]-s.ex,tg[1]-s.ey)<.04){s.k++;s.bk=0}
+   else{const ux=vx/Math.max(g,1e-9),uy=vy/Math.max(g,1e-9);
+    if(l.doors.some((d,j)=>!s.doors[j]&&hit(s.ex+ux*.12,s.ey+uy*.12,d)))s.bk++;else s.bk=0;break}
+   if(s.k>sched)break}
+  s.ev2=[s.ex-eo[0],s.ey-eo[1]];
+  while(s.ev[s.ei]&&s.ev[s.ei].n<=s.k){const e=s.ev[s.ei++];
+   if(e.k=="g"&&!s.ec){const c=near(s.ex,s.ey);if(c){c.h="e";s.ec=c}else s.ec={ghost:1}}else if(e.k=="d"&&s.ec){if(!s.ec.ghost)place(s.ec,s.ex,s.ey,s.gx,s.gy);s.ec=null}}
+  if(s.bk>6)killEcho(s)}
+ else s.ev2=[0,0];
+ for(const c of s.crates){if(c.h=="p"){c.x=s.px;c.y=s.py}else if(c.h=="e"){c.x=s.ex;c.y=s.ey}}
+ if(l.trace){let all=true;l.trace.forEach((w,k)=>{const m=s.mk[k],pi=Math.hypot(s.px-w[0],s.py-w[1])<(l.tg?.42:.55),ei=!s.dead&&Math.hypot(s.ex-w[0],s.ey-w[1])<(l.tg?.42:.55);const ci=s.crates.some(c=>!c.h&&Math.abs(c.x-w[0])<.62&&Math.abs(c.y-w[1])<.62);if(pi&&!m.p)m.n++;if(ei&&!m.e)m.n++;if(ci&&!m.c)m.n++;m.p=pi;m.e=ei;m.c=ci;if(!(m.n%2))all=false});if(all&&s.rv==null&&!l.tg)s.rv=tt}
+ const P=[[s.px,s.py],...(s.dead?[]:[[s.ex,s.ey]]),...s.crates.map(c=>[c.x,c.y])];
+ const AP=l.plates.concat(s.dp);s.pr=AP.map(p=>P.some(q=>Math.abs(q[0]-p[0])<.75&&Math.abs(q[1]-p[1])<.75));
+ AP.forEach((p,k)=>{if(p[3]&&s.pr[k])s.un[p[2]]=true});
+ s.doors=l.doors.map((d,j)=>s.un[j]||(l.tg&&l.tg.some(t=>t[1]==j&&s.mk[t[0]]&&s.mk[t[0]].n%2))||AP.some((p,k)=>p[2]==j&&s.pr[k])||hit(s.px,s.py,d)||(!s.dead&&hit(s.ex,s.ey,d))||s.crates.some(c=>!c.h&&hit(c.x,c.y,d)));
+ const occ=EXS(l).map(e=>Math.hypot(s.px-e[0],s.py-e[1])<.9&&Math.hypot(s.ex-e[0],s.ey-e[1])<.05&&s.cen&&(!l.tool||HAS));
+ if(!s.dead&&occ.length&&occ.every(Boolean))s.w+=DT;else s.w=0;
+ if(s.w>.4){s.done=true;s.warp=tt;s.wi=Math.max(0,EXS(l).findIndex(e=>Math.hypot(s.px-e[0],s.py-e[1])<.9)); setTimeout(()=>{if(S===s){arrive=true;nxt()}},2900)}}
+function pose(b,x,y,v,carry,k){const sp=Math.hypot(v[0],v[1])/DT;b.position.set(X(x),0,Z(y));
+ if(sp>.5){const a=Math.atan2(v[0],v[1]);let d=a-b.rotation.y;d=Math.atan2(Math.sin(d),Math.cos(d));b.rotation.y+=d*.25}
+ const sw=Math.sin(tt*11+k)*.7*Math.min(1,sp/SP);b.lL.rotation.x=sw;b.lR.rotation.x=-sw;b.aL.rotation.x=carry?-2.7:-sw;b.aR.rotation.x=carry?-2.7:sw}
+function sync(){const s=S;
+ const z0=[0,0];pose(pB,s.px,s.py,s.done?z0:(s.pv||z0),!!s.pc,0);pose(eB,s.ex,s.ey,s.done?z0:(s.ev2||z0),!!s.ec,1);eB.position.y=Math.sin(tt*2)*.04+.05;
+ if(S.dead){const f=Math.max(0,1-(tt-S.dtt)*2.5);eB.scale.setScalar(Math.max(.001,f));eB.visible=f>0;eL.intensity=1.2*f}else{eB.scale.setScalar(1);eB.visible=true;eL.intensity=1.2}
+ dM.forEach((m,j)=>{const t=s.doors[j]?-WH/2-.1:WH/2;m.position.y+=(t-m.position.y)*.2});
+ dpM.forEach((m,k)=>{const pr=S.pr[L[lv].plates.length+k];m.userData.sp.material.opacity=pr?.5:.15;m.position.y+=((pr?-.047:.05)-m.position.y)*.25;const u=Math.min(1,(tt-m.userData.t0)*2.5);m.scale.set(u,1,u)});if(xdM){const u=Math.min(1,(tt-xdM.userData.t0)*2);xdM.scale.set(u,u,u)}
+ tgM.forEach((o,k)=>{const lit=S.mk[k]&&S.mk[k].n%2;o.userData.sp.material.opacity=lit?.5:.15;o.position.y+=((lit?-.047:.05)-o.position.y)*.25});
+ trM.forEach((m,k)=>{const lit=S.mk[k]&&S.mk[k].n%2,w=S.rv!=null;m.material.opacity=w?.6+.4*Math.sin(tt*6+k):lit?1:0;m.material.color.copy(w?TL:SYM);m.visible=m.material.opacity>.01});
+ if(tlM){const sh=!tlM.tr||S.rv!=null,u=S.rv!=null?Math.min(1,(tt-S.rv)/1.5):1;tlM.g.visible=tlM.gl.visible=sh;tlM.g.rotation.y=tt*1.5;tlM.g.position.y=.9*u+Math.sin(tt*2)*.12*u}L[lv].plates.forEach((p,k)=>{const m=pM[k];m.userData.sp.material.opacity=s.pr[k]?.5:.15;m.position.y+=((s.pr[k]?-.047:.05)-m.position.y)*.25});
+ s.crates.forEach((c,j)=>{const cp=cM[j].position,px=X(c.x),pz=Z(c.y);let ty=.35;if(!c.h)[...pM,...dpM,...tgM].forEach(m=>{if(Math.hypot(px-m.position.x,pz-m.position.z)<m.geometry.parameters.radiusTop+.25)ty=Math.max(ty,.35+m.position.y+.05)});cp.set(px,c.h?2.1:(cp.y<1.5?cp.y+(ty-cp.y)*.35:ty),pz);cM[j].rotation.y=c.h?(c.h=="p"?pB:eB).rotation.y:(c.r||0);if(cM[j].userData.t0!=null)cM[j].scale.setScalar(Math.min(1,(tt-cM[j].userData.t0)*3))});
+ const pos=tr.geometry.attributes.position,n0=s.k||0;let k=0;
+ for(let i=n0;i<s.hist.length&&k<400;i+=3,k++)pos.setXYZ(k,X(s.hist[i][0]),.08,Z(s.hist[i][1]));pos.needsUpdate=true;tr.geometry.setDrawRange(0,S.dead?0:k);
+ const ce=Math.cos(elv())*rigR(),ay=-tX;
+ if(dmode){pl.updateMatrixWorld();cam.position.lerp(pl.localToWorld(_w.set(dmode.cp[0],dmode.cp[1],dmode.cp[2])),.14);lk.lerp(pl.localToWorld(_w2.set(dmode.lk[0],dmode.lk[1],dmode.lk[2])),.14)}
+ else{cam.position.x+=(Math.sin(ay)*ce-cam.position.x)*.08;cam.position.z+=(Math.cos(ay)*ce-cam.position.z)*.08;cam.position.y+=(Math.sin(elv())*rigR()-cam.position.y)*.08;lk.lerp(_w.set(0,0,0),.1)}
+ cam.lookAt(lk);
+ pl.rotation.z=Math.sin(tt*.5)*.012;pl.position.y=Math.sin(tt*.8)*.22;
+ rocks.forEach(r=>{r.rotation.x+=r.userData.s*.02;r.rotation.y+=r.userData.s*.015;r.position.y=r.userData.y+Math.sin(tt*.6+r.userData.p)*.8});
+ /* Kamui sequence: the exit spins up and turns red, a Sharingan opens in its middle, both bodies twist into it */
+ const dt=Math.min(.1,tt-(sync.t==null?tt:sync.t));sync.t=tt;
+ const wp=S.warp==null?-1:tt-S.warp,wk=wp<0?0:Math.min(1,wp),cl=x=>Math.min(1,Math.max(0,x)),ea=S.arr==null?9:tt-S.arr,k0=wp>=0?cl((wp-.6)/1.9):1-cl((ea-.2)/1.9),k1=wp>=0?cl((wp-.75)/1.9):1-cl((ea-.4)/1.9);
+ wU[0].k.value=k0;wU[1].k.value=k1;
+ if(wp>=0||ea<3){const ex=wp>=0?EXS(L[lv])[S.wi]:L[lv].start;pl.updateMatrixWorld();_v.set(X(ex[0]),.06,Z(ex[1]));pl.localToWorld(_v);wU[0].c.value.copy(_v);wU[1].c.value.copy(_v);
+  if(wp>=0&&S.xw&&S.wi==L[lv].exits.length){_v.set(S.xw.p[0],S.xw.p[1],S.xw.p[2]);pl.localToWorld(_v);_w.set(S.xw.p[0]+S.xw.n[0],S.xw.p[1],S.xw.p[2]+S.xw.n[1]);pl.localToWorld(_w);_w.sub(_v).normalize();
+   [0,1].forEach(i=>{wU[i].c.value.copy(_v);wU[i].a.value.copy(_w);wU[i].m.value=1})}
+  else[0,1].forEach(i=>{wU[i].a.value.set(0,1,0);wU[i].m.value=0})}
+ pB.visible=k0<1&&!dmode;if(k1>=1)eB.visible=false;if(dmode){eB.visible=false;eL.intensity=0}eL.intensity*=1-k1;}
+let fpsN=0,fpsT=0;const fpsE=document.getElementById("fps");
+function loop(t){const f=Math.min(.1,(t-last)/1000);last=t;acc+=f;tt+=f;
+ fpsN++;fpsT+=(t-(loop.p||t));loop.p=t;if(fpsT>=500){fpsE.textContent=Math.round(fpsN*1000/fpsT)+" FPS";fpsN=0;fpsT=0}
+ while(acc>=DT){if(!dmode)step();acc-=DT}sync();rd.render(sc,cam);requestAnimationFrame(loop)}
+/* input */
+addEventListener("keydown",e=>{if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Space"].includes(e.code))e.preventDefault();
+ if(dmode&&e.code=="Tab"){e.preventDefault();if(!keys[e.code])cycleSurf(e.shiftKey?-1:1)}
+ if(!keys[e.code]){if(e.code=="KeyE"||e.code=="Space")S.act=true;if(e.code=="KeyQ")dmode?finishDraw():startDraw();if(dmode&&e.code=="Enter")finishDraw();if(dmode&&e.code=="Escape")finishDraw(1);if(dmode&&e.code=="KeyC")clearDraw();if(e.code=="KeyR")load(lv,true);if(e.code=="Enter"&&S.done&&ov.style.display=="flex")nxt()}keys[e.code]=1});
+addEventListener("keyup",e=>keys[e.code]=0);addEventListener("blur",()=>keys={});
+document.addEventListener("click",e=>{if(e.target.tagName=="BUTTON")e.target.blur()});
+addEventListener("pointerdown",e=>{if(dmode||e.button!==0||e.target!==rd.domElement)return;drg=true;lx=e.clientX;ly=e.clientY;rd.domElement.setPointerCapture(e.pointerId)});
+addEventListener("pointerup",()=>drg=false);addEventListener("pointercancel",()=>drg=false);
+addEventListener("pointermove",e=>{if(!drg)return;const dx=e.clientX-lx,dy=e.clientY-ly;lx=e.clientX;ly=e.clientY;
+ tX+=dx*(Math.PI*2/innerHeight);tY=Math.max(-.35,Math.min(.35,tY+dy*.0022))});
+addEventListener("wheel",e=>{if(e.ctrlKey)return;e.preventDefault();zm=Math.max(.6,Math.min(2,zm*(e.deltaY>0?1.1:1/1.1)))},{passive:false});
+function nxt(){if(S&&S.dead)return load(lv,true);load(lv==L.length-1?0:lv+1)}
+document.getElementById("nx").onclick=nxt;document.getElementById("rs").onclick=()=>load(lv,true);
+dl.oninput=()=>{D=+dl.value;load(lv,true);dl.blur()};
+/* Rapier physics (WASM, loaded from CDN; the old hand-rolled collision stays as a fallback if it can't load) */
+async function bootPhysics(){try{
+ const m=await import("https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.12.0/rapier.es.js"),RP=m.default&&m.default.init?m.default:m;await RP.init();
+ PH={w:null,
+  build(l){if(PH.w)PH.w.free();const w=PH.w=new RP.World({x:0,y:0,z:0}),
+   box=(cx,cz,hx,hz)=>w.createCollider(RP.ColliderDesc.cuboid(hx,.5,hz).setTranslation(cx,0,cz));
+   box(-1,H/2,1,H/2+2);box(W+1,H/2,1,H/2+2);box(W/2,-1,W/2+2,1);box(W/2,H+1,W/2+2,1);
+   PH.wc=l.walls.map(r=>box(r[0]+r[2]/2,r[1]+r[3]/2,r[2]/2,r[3]/2));
+   PH.dc=l.doors.map(r=>box(r[0]+r[2]/2,r[1]+r[3]/2,r[2]/2,r[3]/2));
+   PH.hd=l.crates.map(()=>0);PH.cb=l.crates.map(c=>{const b=w.createRigidBody(RP.RigidBodyDesc.dynamic().setTranslation(c[0],0,c[1]).enabledTranslations(true,false,true).enabledRotations(false,true,false).setLinearDamping(6).setAngularDamping(6).setCcdEnabled(true));w.createCollider(RP.ColliderDesc.cuboid(.35,.5,.35).setDensity(1).setFriction(.4),b);return b});
+   PH.m=[box(0,0,R,R),box(0,0,R,R)];
+   PH.ctl=w.createCharacterController(.01);PH.ctl.setSlideEnabled(true);PH.ctl.setApplyImpulsesToDynamicBodies(true);PH.ctl.setCharacterMass(2)},
+  cub(r){return PH.w.createCollider(RP.ColliderDesc.cuboid(r[2]/2,.5,r[3]/2).setTranslation(r[0]+r[2]/2,0,r[1]+r[3]/2))},
+  addD(r){PH.dc.push(PH.cub(r))},addW(r){PH.wc.push(PH.cub(r))},rmW(i){PH.w.removeCollider(PH.wc[i],true);PH.wc.splice(i,1)},
+  addC(x,y){const b=PH.w.createRigidBody(RP.RigidBodyDesc.dynamic().setTranslation(x,0,y).enabledTranslations(true,false,true).enabledRotations(false,true,false).setLinearDamping(6).setAngularDamping(6).setCcdEnabled(true));PH.w.createCollider(RP.ColliderDesc.cuboid(.35,.5,.35).setDensity(1).setFriction(.4),b);PH.cb.push(b);PH.hd.push(0)},
+  sync(s){s.doors.forEach((o,i)=>PH.dc[i].setEnabled(!o));
+   s.crates.forEach((c,i)=>{const b=PH.cb[i];
+    if(c.h){if(b.isEnabled())b.setEnabled(false);PH.hd[i]=1}
+    else if(PH.hd[i]){b.setTranslation({x:c.x,y:0,z:c.y},true);b.setLinvel({x:0,y:0,z:0},true);b.setRotation({w:1,x:0,y:0,z:0},true);b.setEnabled(true);PH.hd[i]=0;c.r=0}});
+   PH.w.step();
+   s.crates.forEach((c,i)=>{if(c.h)return;const t=PH.cb[i].translation(),q=PH.cb[i].rotation();c.x=t.x;c.y=t.z;c.r=2*Math.atan2(q.y,q.w)})},
+  mv(i,x,y,dx,dy){const c=PH.m[i],o=PH.m[1-i];c.setTranslation({x:x,y:0,z:y});
+   PH.ctl.computeColliderMovement(c,{x:dx,y:0,z:dy},undefined,undefined,k=>k.handle!==o.handle);
+   const t=PH.ctl.computedMovement();return[x+t.x,y+t.z]}};
+ console.log("Rapier physics active")}catch(e){PH=null;console.warn("Rapier unavailable, using built-in collision",e)}}
+Promise.race([bootPhysics(),new Promise(r=>setTimeout(r,8000))]).then(()=>{load(0);requestAnimationFrame(t=>{last=t;loop(t)})});
+</script></body></html>
